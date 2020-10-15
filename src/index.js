@@ -1,26 +1,23 @@
-import React from 'react';
-import ReactDOM from 'react-dom';
-import './index.css';
-import App from './App';
-import * as serviceWorker from './serviceWorker';
 import applyDevTools from "prosemirror-dev-tools";
-import "./editor.css";
+import * as serviceWorker from './serviceWorker';
 import {addListNodes} from "prosemirror-schema-list"
-import { EditorState,NodeSelection } from "prosemirror-state";
-import {Schema, DOMParser} from "prosemirror-model"
-import { EditorView } from "prosemirror-view";
-import { schema , nodes } from "prosemirror-schema-basic";
-const {exampleSetup, buildMenuItems} = require("prosemirror-example-setup")
-//const {blockTypeItem} = require("prosemirror-menu")
-const {MenuItem} = require("prosemirror-menu")
+const {Plugin} = require("prosemirror-state")
+const {Decoration, DecorationSet} = require("prosemirror-view")
+
+const {Schema,DOMParser} = require("prosemirror-model")
+const {EditorState,NodeSelection} = require("prosemirror-state")
+const {EditorView} = require("prosemirror-view")
+const {schema,nodes} = require("prosemirror-schema-basic")
+const {exampleSetup} = require("prosemirror-example-setup")
 
 const resizableImage = {
   inline: true,
   attrs: {
     src: {},
-    width: {default: "10em"},
+    width: {default: "5em"},
     alt: {default: null},
-    title: {default: null}
+    title: {default: null},
+    alignment: { default: "center" }
   },
   group: "inline",
   draggable: true,
@@ -32,21 +29,17 @@ const resizableImage = {
         src: dom.getAttribute("src"),
         title: dom.getAttribute("title"),
         alt: dom.getAttribute("alt"),
-        width: dom.getAttribute("width")
+        width: dom.getAttribute("width"),
+        alignment: dom.getAttribute("class")==="center" ? "center" : (dom.getAttribute("class")==="right" ? "right" : "left"),
       }
     }
   }],
   // TODO if we don't define toDom, something weird happens: dragging the image will not move it but clone it. Why?
   toDOM(node) {
     const attrs = {style: `width: ${node.attrs.width}`}
-    return ["span", { ...node.attrs, ...attrs }] 
+    return ["div", { ...node.attrs, ...attrs }] 
   }
 }
-
-const mySchema = new Schema({
-  nodes: { ...nodes, resizableImage },
-  marks: schema.spec.marks
-})
 
 function getFontSize(element) {
   return parseFloat(getComputedStyle(element).fontSize);
@@ -54,14 +47,15 @@ function getFontSize(element) {
 
 class FootnoteView {
   constructor(node, view, getPos) {    
-    const outer = document.createElement("span")
+    const outer = document.createElement("div")
     outer.style.position = "relative"
     outer.style.width = node.attrs.width
     //outer.style.border = "1px solid blue"
-    outer.style.display = "inline-block"
+    outer.style.display = "block"
     //outer.style.paddingRight = "0.25em"
     outer.style.lineHeight = "0"; // necessary so the bottom right arrow is aligned nicely
-    
+    outer.style.marginLeft='auto';
+    outer.style.marginRight='auto';
     const img = document.createElement("img")
     img.setAttribute("src", node.attrs.src)
     img.style.width = "100%"
@@ -97,9 +91,11 @@ class FootnoteView {
         const diffInEm = diffInPx / fontSize
                 
         outer.style.width = `${startWidth + diffInEm}em`
+      
       }
       
-      const onMouseUp = (e) => {        
+      const onMouseUp = (e) => {  
+       
         e.preventDefault()
         
         document.removeEventListener("mousemove", onMouseMove)
@@ -137,62 +133,107 @@ class FootnoteView {
   }
 }
 
-// ===============================================================
 
-function makeImageMenuItem(options) {
-  let command = (state, dispatch) => {
-    const nodeName = state.selection && state.selection.node && state.selection.node.type.name;
-    
-    if (nodeName === "image" || nodeName === "resizableImage") {
-      if (dispatch) {
-        const nodeType = nodeName === "image" 
-          ? mySchema.nodes.resizableImage
-          : mySchema.nodes.image
-        
-        const tr = state.tr.replaceSelectionWith(nodeType.create({src: state.selection.node.attrs.src}))
-
-        dispatch(tr)
+let placeholderPlugin = new Plugin({
+  state: {
+    init() { return DecorationSet.empty },
+    apply(tr, set) {
+      // Adjust decoration positions to changes made by the transaction
+      set = set.map(tr.mapping, tr.doc)
+      // See if the transaction adds or removes any placeholders
+      let action = tr.getMeta(this)
+      console.log("act",action)
+      if (action && action.add) {
+        let widget = document.createElement("placeholder")
+        let deco = Decoration.widget(action.add.pos, widget, {id: action.add.id})
+        set = set.add(tr.doc, [deco])
+      } else if (action && action.remove) {
+        set = set.remove(set.find(null, null,
+                                  spec => spec.id == action.remove.id))
       }
-    
-      return true
+      return set
     }
-    
-    return false
+  },
+  props: {
+    decorations(state) { return this.getState(state) }
   }
-  
-  let passedOptions = {
-    run: command,
-    enable(state, dispatch) { return command(state, dispatch) },
-    active(state, dispatch) {
-      const nodeName = state.selection && state.selection.node && state.selection.node.type.name;
-      return nodeName === "resizableImage"
-    }
-  }
-  
-  for (let prop in options) passedOptions[prop] = options[prop]
-  
-  return new MenuItem(passedOptions)
+})
+
+function findPlaceholder(state, id) {
+  let decos = placeholderPlugin.getState(state)
+  let found = decos.find(null, null, spec => spec.id == id)
+  return found.length ? found[0].from : null
 }
 
-// ===============================================================
 
-const makeImage = makeImageMenuItem({ label: "resizable" });
+document.querySelector("#image-upload").addEventListener("change", e => {
+  if (view.state.selection.$from.parent.inlineContent && e.target.files.length)
+    startImageUpload(view, e.target.files[0])
+  view.focus()
+})
 
-const menu = buildMenuItems(mySchema)
+document.querySelector("#image-upload").addEventListener("click",e=>e.target.value='')
 
-menu.blockMenu[0].push(makeImage)
+const mySchema = new Schema({
+  nodes: { ...nodes, resizableImage },
+  marks: schema.spec.marks
+})
 
-const plugins = exampleSetup({schema: mySchema, menuContent: menu.fullMenu})
+function startImageUpload(view, file) {
+  // A fresh object to act as the ID for this upload
+  let id = {}
 
-const view = new EditorView(document.querySelector("#root"), {
+  // Replace the selection with a placeholder
+  let tr = view.state.tr
+  
+  if (!tr.selection.empty) tr.deleteSelection()
+  tr.setMeta(placeholderPlugin, {add: {id, pos: tr.selection.from }})
+  view.dispatch(tr)
+
+  uploadFile(file).then(url => {
+    let pos = findPlaceholder(view.state, id)
+    // If the content around the placeholder has been deleted, drop
+    // the image
+    if (pos == null) return
+    // Otherwise, insert it at the placeholder's position, and remove
+    // the placeholder
+    console.log(mySchema.nodes,"nodes")
+    view.dispatch(view.state.tr
+                  .replaceWith(pos, pos, mySchema.nodes.resizableImage.create({src: 'https://cdn.vox-cdn.com/thumbor/PSLYCBn2BjUj8Zdbf4BD6SMus-0=/0x0:1800x1179/920x613/filters:focal(676x269:964x557):format(webp)/cdn.vox-cdn.com/uploads/chorus_image/image/66741310/3zlqxf_copy.0.jpg'}))
+                  .setMeta(placeholderPlugin, {remove: {id}}))
+  }, () => {
+    // On failure, just clean up the placeholder
+    view.dispatch(tr.setMeta(placeholderPlugin, {remove: {id}}))
+  })
+}
+
+// This is just a dummy that loads the file and creates a data URL.
+// You could swap it out with a function that does an actual upload
+// and returns a regular URL for the uploaded file.
+function uploadFile(file) {
+  let reader = new FileReader
+  return new Promise((accept, fail) => {
+    reader.onload = () => accept(reader.result)
+    reader.onerror = () => fail(reader.error)
+    // Some extra delay to make the asynchronicity visible
+    setTimeout(() => reader.readAsDataURL(file), 1500)
+  })
+}
+
+
+
+let view  = new EditorView(document.querySelector("#editor"), {
   state: EditorState.create({
-    schema:mySchema,
-    plugins
+    doc: DOMParser.fromSchema(mySchema).parse(document.querySelector("#content")),
+    plugins: exampleSetup({schema:mySchema}).concat(placeholderPlugin)
   }),
   nodeViews: {
     resizableImage(node, view, getPos) { return new FootnoteView(node, view, getPos) }
   }
 })
+
+
+
 
 applyDevTools(view);
 
